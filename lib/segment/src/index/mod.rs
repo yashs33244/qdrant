@@ -1,4 +1,4 @@
-mod condition_checker;
+pub mod condition_checker;
 pub mod field_index;
 pub mod hnsw_index;
 mod memory_reporter;

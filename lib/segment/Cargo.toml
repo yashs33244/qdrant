@@ -136,6 +136,10 @@ name = "read_payloads"
 harness = false
 
 [[bench]]
+name = "filtered_hnsw_search"
+harness = false
+
+[[bench]]
 name = "hnsw_build_graph"
 harness = false
 
@@ -173,6 +177,14 @@ harness = false
 
 [[bench]]
 name = "numeric_index_check_values"
+harness = false
+
+[[bench]]
+name = "index_check_batched"
+harness = false
+
+[[bench]]
+name = "optimized_filter"
 harness = false
 
 [[bench]]

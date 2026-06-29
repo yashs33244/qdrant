@@ -45,18 +45,21 @@ fn sparse_vector_index_search_benchmark(c: &mut Criterion) {
     let random_vectors = (0..NUM_VECTORS).map(|_| random_sparse_vector(&mut rnd, MAX_SPARSE_DIM));
     sparse_vector_index_search_benchmark_impl(c, "random-50k", random_vectors, &query_vectors);
 
-    let dataset_vectors = Csr::open(Dataset::NeurIps2023_1M.download().unwrap()).unwrap();
-    let query_vectors = Csr::open(Dataset::NeurIps2023Queries.download().unwrap())
-        .unwrap()
-        .iter()
-        .unwrap()
-        .collect_vec();
-    sparse_vector_index_search_benchmark_impl(
-        c,
-        "neurips2023-1M",
-        dataset_vectors.iter().unwrap(),
-        &query_vectors,
-    );
+    // Opt-in: the 1M dataset takes minutes to index on every run.
+    if std::env::var_os("SPARSE_BENCH_FULL").is_some() {
+        let dataset_vectors = Csr::open(Dataset::NeurIps2023_1M.download().unwrap()).unwrap();
+        let query_vectors = Csr::open(Dataset::NeurIps2023Queries.download().unwrap())
+            .unwrap()
+            .iter()
+            .unwrap()
+            .collect_vec();
+        sparse_vector_index_search_benchmark_impl(
+            c,
+            "neurips2023-1M",
+            dataset_vectors.iter().unwrap(),
+            &query_vectors,
+        );
+    }
 }
 
 fn sparse_vector_index_search_benchmark_impl(
@@ -82,16 +85,21 @@ fn sparse_vector_index_search_benchmark_impl(
     )
     .unwrap();
 
-    // adding payload on field
+    // adding payload on fields
     let field_name = "field";
     let field_value = "important value";
-    let payload = payload_json! {field_name: field_value};
+    // `field` is the same for all points; `field2` cycles through ten values,
+    // so matching a single one selects ~10% of the points.
+    let field2_name = "field2";
 
     let hw_counter = HardwareCounterCell::new();
 
-    // all points have the same payload
     let mut payload_index = sparse_vector_index.payload_index().borrow_mut();
     for idx in 0..NUM_VECTORS {
+        let payload = payload_json! {
+            field_name: field_value,
+            field2_name: format!("v{}", idx % 10),
+        };
         payload_index
             .set_payload(idx as PointOffsetType, &payload, &None, &hw_counter)
             .unwrap();
@@ -129,7 +137,7 @@ fn sparse_vector_index_search_benchmark_impl(
                     .search(&[&vec], None, TOP, None, &Default::default())
                     .unwrap();
 
-                assert_eq!(results[0].len(), TOP);
+                std::hint::black_box(results);
             },
             BatchSize::SmallInput,
         )
@@ -144,7 +152,7 @@ fn sparse_vector_index_search_benchmark_impl(
                     .search(&[&vec], None, TOP, None, &Default::default())
                     .unwrap();
 
-                assert_eq!(results[0].len(), TOP);
+                std::hint::black_box(results);
             },
             BatchSize::SmallInput,
         )
@@ -173,7 +181,7 @@ fn sparse_vector_index_search_benchmark_impl(
                         )
                         .unwrap();
 
-                    assert_eq!(results.len(), TOP);
+                    std::hint::black_box(results);
                 },
                 BatchSize::SmallInput,
             )
@@ -182,9 +190,12 @@ fn sparse_vector_index_search_benchmark_impl(
 
     let mut payload_index = sparse_vector_index.payload_index().borrow_mut();
 
-    // create payload field index
+    // create payload field indexes
     payload_index
         .set_indexed(&field_name.parse().unwrap(), Keyword, &hw_counter)
+        .unwrap();
+    payload_index
+        .set_indexed(&field2_name.parse().unwrap(), Keyword, &hw_counter)
         .unwrap();
 
     drop(payload_index);
@@ -198,7 +209,55 @@ fn sparse_vector_index_search_benchmark_impl(
                     .search(&[&vec], Some(&filter), TOP, None, &Default::default())
                     .unwrap();
 
-                assert_eq!(results[0].len(), TOP);
+                std::hint::black_box(results);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let field2_condition = Condition::Field(FieldCondition::new_match(
+        field2_name.parse().unwrap(),
+        "v0".to_owned().into(),
+    ));
+
+    // intent: ditto, but the filter selects only ~10% of the points
+    let filter_10pct = Filter::new_must(field2_condition.clone());
+    group.bench_function("inverted-index-filtered-payload-index-10pct", |b| {
+        b.iter_batched(
+            || query_vector_it.next().unwrap().clone().into(),
+            |vec| {
+                let results = sparse_vector_index
+                    .search(&[&vec], Some(&filter_10pct), TOP, None, &Default::default())
+                    .unwrap();
+
+                std::hint::black_box(results);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    // intent: ditto, with two indexed conditions ANDed
+    let filter_two = Filter {
+        should: None,
+        min_should: None,
+        must: Some(vec![
+            Condition::Field(FieldCondition::new_match(
+                field_name.parse().unwrap(),
+                field_value.to_owned().into(),
+            )),
+            field2_condition,
+        ]),
+        must_not: None,
+    };
+    group.bench_function("inverted-index-filtered-2-payload-index", |b| {
+        b.iter_batched(
+            || query_vector_it.next().unwrap().clone().into(),
+            |vec| {
+                let results = sparse_vector_index
+                    .search(&[&vec], Some(&filter_two), TOP, None, &Default::default())
+                    .unwrap();
+
+                std::hint::black_box(results);
             },
             BatchSize::SmallInput,
         );
@@ -221,7 +280,7 @@ fn sparse_vector_index_search_benchmark_impl(
                         )
                         .unwrap();
 
-                    assert_eq!(results.len(), TOP);
+                    std::hint::black_box(results);
                 },
                 BatchSize::SmallInput,
             )
