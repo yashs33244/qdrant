@@ -22,7 +22,6 @@ mod fixture;
 use std::hint::black_box;
 
 use common::counter::hardware_counter::HardwareCounterCell;
-use common::cow::SimpleCow;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use ordered_float::OrderedFloat;
 use rand::SeedableRng;
@@ -124,9 +123,9 @@ fn filtered_hnsw_benchmark(c: &mut Criterion) {
                         let query = random_vector(&mut rng, DIM);
                         // The filter context is rebuilt per query, as in the
                         // production search path.
-                        let filter_context = filter.as_ref().map(|f| {
-                            SimpleCow::Owned(view.filter_context(f, &hw_counter).unwrap())
-                        });
+                        let filter_context = filter
+                            .as_ref()
+                            .map(|f| view.filter_context(f, &hw_counter).unwrap());
                         let scorer = FilteredScorer::new(
                             query.into(),
                             vector_holder.storage(),
