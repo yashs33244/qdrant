@@ -320,19 +320,18 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
             tokens: TokenSet,
             filter: impl Fn(PointOffsetType) -> bool,
         ) -> OperationResult<Vec<PointOffsetType>> {
-            let result =
-                postings.with_all_or_none_postings(tokens.tokens(), |posting_readers| {
-                    if posting_readers.is_empty() {
-                        return Ok(Vec::new());
-                    }
-                    let posting_readers = posting_readers
-                        .into_iter()
-                        .map(|(_token_id, posting_list_view)| posting_list_view)
-                        .collect();
-                    Ok(intersect_compressed_postings_iterator(posting_readers, filter).collect())
-                })?;
-            // Some token has no posting list -> no matches
-            Ok(result.unwrap_or_default())
+            postings.with_all_or_none_postings(tokens.tokens(), |posting_readers| {
+                // Empty query, or a missing token -> no matches
+                let Some(posting_readers) = posting_readers.filter(|readers| !readers.is_empty())
+                else {
+                    return Ok(Vec::new());
+                };
+                let posting_readers = posting_readers
+                    .into_iter()
+                    .map(|(_token_id, posting_list_view)| posting_list_view)
+                    .collect();
+                Ok(intersect_compressed_postings_iterator(posting_readers, filter).collect())
+            })
         }
 
         match &self.storage.postings {
@@ -389,13 +388,14 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
             tokens: &TokenSet,
             point_id: PointOffsetType,
         ) -> OperationResult<bool> {
-            let result = postings.with_all_or_none_postings(tokens.tokens(), |all_postings| {
-                Ok(all_postings
-                    .into_iter()
-                    .all(|(_token_id, posting)| posting.visitor().contains(point_id)))
-            })?;
-            // Some token has no posting list -> no match
-            Ok(result.unwrap_or(false))
+            postings.with_all_or_none_postings(tokens.tokens(), |all_postings| {
+                // Some token has no posting list -> no match
+                Ok(all_postings.is_some_and(|all_postings| {
+                    all_postings
+                        .into_iter()
+                        .all(|(_token_id, posting)| posting.visitor().contains(point_id))
+                }))
+            })
         }
 
         match &self.storage.postings {
@@ -445,19 +445,18 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
                 // not fetch the same posting list twice, otherwise positions get
                 // added twice in `phrase_in_all_postings`.
                 let unique_tokens = phrase.to_token_set();
-                let result = postings.with_all_or_none_postings(
-                    unique_tokens.tokens(),
-                    |selected_postings| {
-                        Ok(intersect_compressed_postings_phrase_iterator(
-                            phrase,
-                            selected_postings,
-                            is_active,
-                        )
-                        .collect())
-                    },
-                )?;
-                // Some token has no posting list -> no matches
-                Ok(result.unwrap_or_default())
+                postings.with_all_or_none_postings(unique_tokens.tokens(), |selected_postings| {
+                    // Some token has no posting list -> no matches
+                    let Some(selected_postings) = selected_postings else {
+                        return Ok(Vec::new());
+                    };
+                    Ok(intersect_compressed_postings_phrase_iterator(
+                        phrase,
+                        selected_postings,
+                        is_active,
+                    )
+                    .collect())
+                })
             }
             // cannot do phrase matching if there's no positional information
             OnDiskPostingsEnum::Ids(_postings) => Ok(Vec::new()),
@@ -477,18 +476,12 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
         match &self.storage.postings {
             OnDiskPostingsEnum::WithPositions(postings) => {
                 let unique_tokens = phrase.to_token_set();
-                let result = postings.with_all_or_none_postings(
-                    unique_tokens.tokens(),
-                    |selected_postings| {
-                        Ok(check_compressed_postings_phrase(
-                            phrase,
-                            point_id,
-                            selected_postings,
-                        ))
-                    },
-                )?;
-                // Some token has no posting list -> no match
-                Ok(result.unwrap_or(false))
+                postings.with_all_or_none_postings(unique_tokens.tokens(), |selected_postings| {
+                    // Some token has no posting list -> no match
+                    Ok(selected_postings.is_some_and(|selected_postings| {
+                        check_compressed_postings_phrase(phrase, point_id, selected_postings)
+                    }))
+                })
             }
             // cannot do phrase matching if there's no positional information
             OnDiskPostingsEnum::Ids(_postings) => Ok(false),
