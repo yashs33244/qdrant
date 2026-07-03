@@ -120,7 +120,7 @@ impl<S: UniversalRead> FullTextIndexRead for ReadOnlyFullTextIndex<S> {
         &self,
         query: &ParsedQuery,
         items: impl Iterator<Item = (U, PointOffsetType)>,
-        on_match: impl FnMut(U, PointOffsetType, bool),
+        on_match: impl FnMut(U, bool),
     ) -> OperationResult<()> {
         match self {
             ReadOnlyFullTextIndex::Appendable(index) => {

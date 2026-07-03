@@ -115,7 +115,7 @@ impl FullTextIndexRead for FullTextIndex {
         &self,
         query: &ParsedQuery,
         items: impl Iterator<Item = (U, PointOffsetType)>,
-        on_match: impl FnMut(U, PointOffsetType, bool),
+        on_match: impl FnMut(U, bool),
     ) -> OperationResult<()> {
         match self {
             Self::Mutable(index) => index.check_match_batch(query, items, on_match),
@@ -379,7 +379,7 @@ impl<T: FullTextIndexRead> ConditionChecker for FullTextConditionChecker<'_, T> 
         self.index.check_match_batch(
             &self.parsed_query,
             p.iter().map(|item| (item, item.point_id())),
-            |item, _, matched| p.write(item, matched == select.is_match()),
+            |item, matched| p.write(item, matched == select.is_match()),
         )?;
         Ok(p.finish())
     }

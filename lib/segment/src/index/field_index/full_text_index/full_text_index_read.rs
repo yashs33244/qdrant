@@ -84,10 +84,10 @@ pub trait FullTextIndexRead {
         &self,
         query: &ParsedQuery,
         items: impl Iterator<Item = (U, PointOffsetType)>,
-        mut on_match: impl FnMut(U, PointOffsetType, bool),
+        mut on_match: impl FnMut(U, bool),
     ) -> OperationResult<()> {
         for (tag, point_id) in items {
-            on_match(tag, point_id, self.check_match(query, point_id)?);
+            on_match(tag, self.check_match(query, point_id)?);
         }
         Ok(())
     }
