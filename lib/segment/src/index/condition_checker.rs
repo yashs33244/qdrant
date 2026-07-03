@@ -49,6 +49,8 @@ pub enum ConditionCheckerEnum<'a> {
     Ids(IdsConditionChecker),
     #[cfg(feature = "testing")]
     Plain(PlainFilterContext<'a>),
+    #[cfg(feature = "testing")]
+    TestBits(TestBits),
 
     // bool index
     BoolImmutable(BoolCC<'a, ImmutableBoolIndex>),
@@ -142,6 +144,8 @@ impl ConditionChecker for ConditionCheckerEnum<'_> {
             Self::Ids(c) => c.check_batched(ids, select, rest),
             #[cfg(feature = "testing")]
             Self::Plain(c) => c.check_batched(ids, select, rest),
+            #[cfg(feature = "testing")]
+            Self::TestBits(c) => c.check_batched(ids, select, rest),
             Self::BoolImmutable(c) => c.check_batched(ids, select, rest),
             Self::BoolMutable(c) => c.check_batched(ids, select, rest),
             #[cfg(target_os = "linux")]
@@ -204,6 +208,8 @@ impl ConditionChecker for ConditionCheckerEnum<'_> {
             Self::Ids(c) => c.check(point_id),
             #[cfg(feature = "testing")]
             Self::Plain(c) => c.check(point_id),
+            #[cfg(feature = "testing")]
+            Self::TestBits(c) => c.check(point_id),
             Self::BoolImmutable(c) => c.check(point_id),
             Self::BoolMutable(c) => c.check(point_id),
             #[cfg(target_os = "linux")]
@@ -266,6 +272,8 @@ impl ConditionChecker for ConditionCheckerEnum<'_> {
             Self::Ids(c) => c.check_infallible(point_id),
             #[cfg(feature = "testing")]
             Self::Plain(c) => c.check_infallible(point_id),
+            #[cfg(feature = "testing")]
+            Self::TestBits(c) => c.check_infallible(point_id),
             Self::BoolImmutable(c) => c.check_infallible(point_id),
             Self::BoolMutable(c) => c.check_infallible(point_id),
             #[cfg(target_os = "linux")]
@@ -317,5 +325,17 @@ impl ConditionChecker for ConditionCheckerEnum<'_> {
             Self::MapStrRoMmap(c) => c.check_infallible(point_id),
             Self::MapUuidRoMmap(c) => c.check_infallible(point_id),
         }
+    }
+}
+
+#[cfg(feature = "testing")]
+pub struct TestBits(pub bitvec::vec::BitVec);
+
+#[cfg(feature = "testing")]
+impl ConditionChecker for TestBits {
+    type Error = OperationError;
+
+    fn check(&self, point_id: PointOffsetType) -> OperationResult<bool> {
+        Ok(self.0[point_id as usize])
     }
 }
