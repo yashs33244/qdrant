@@ -209,6 +209,7 @@ impl From<UniversalIoError> for OperationError {
             | UniversalIoError::InvalidFileIndex { .. }
             | UniversalIoError::Uninitialized { .. }
             | UniversalIoError::QueueIsFull
+            | UniversalIoError::AppendOffsetConflict { .. }
             | UniversalIoError::S3(_)
             | UniversalIoError::S3Config { .. }
             | UniversalIoError::TaskPanicked(_) => Self::service_error(err.to_string()),
