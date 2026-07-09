@@ -26,9 +26,10 @@ pub trait ConditionChecker {
     /// Returns the partition point (aka the length of the left side).
     ///
     /// ```text
-    /// Input:  ` ○ ○ ● ○ ○ ○ ● ○ ● ○ ● ● ○`
-    /// Output: ` ● ● ● ● ● ○ ○ ○ ○ ○ ○ ○ ○`
-    ///                     ↑ partition point
+    /// Input:   ○ ○ ● ○ ○ ○ ● ○ ● ○ ● ● ○
+    /// Output:  ● ● ● ● ● ○ ○ ○ ○ ○ ○ ○ ○
+    //          └─────────┴───────────────┘
+    ///                   ↑ partition point
     /// ```
     fn check_batched<K: CheckItem>(
         &mut self,
@@ -87,6 +88,14 @@ impl Select {
     #[inline(always)]
     pub const fn is_match(self) -> bool {
         matches!(self, Select::Match)
+    }
+}
+
+impl Rest {
+    /// Helper for sequencing checks.
+    #[inline(always)]
+    pub const fn keep_if(self, more_checks_follow: bool) -> Rest {
+        if more_checks_follow { Rest::Keep } else { self }
     }
 }
 

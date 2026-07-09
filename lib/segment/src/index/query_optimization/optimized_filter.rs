@@ -101,140 +101,153 @@ impl ConditionChecker for OptimizedFilter<'_> {
         select: Select,
         rest: Rest,
     ) -> OperationResult<usize> {
+        let OptimizedFilter {
+            should,
+            min_should,
+            min_should_count,
+            must,
+            must_not,
+            scratch,
+        } = self;
         match select {
-            Select::Match => self.select_match(ids, rest),
-            Select::NonMatch => self.select_non_match(ids),
-        }
-    }
-}
+            Select::Match => {
+                // must ∩ must_not ∩ should ∩ min_should
 
-impl<'a> OptimizedFilter<'a> {
-    fn select_match<K: CheckItem>(&mut self, ids: &mut [K], rest: Rest) -> OperationResult<usize> {
-        let OptimizedFilter {
-            should,
-            min_should,
-            min_should_count,
-            must,
-            must_not,
-            scratch: min_should_bounds,
-        } = self;
-
-        // Survivors to the front. `rest` decides if the failing side survives.
-        let mut hi = ids.len();
-
-        // `must`: matches to the front (compact unless the drops must survive).
-        for child in must.iter_mut() {
-            hi = child.check_batched(&mut ids[..hi], Select::Match, rest)?;
-        }
-
-        // `must_not`: non-matches (survivors) to the front.
-        for child in must_not.iter_mut() {
-            hi = child.check_batched(&mut ids[..hi], Select::NonMatch, rest)?;
-        }
-
-        // `should`: union of matches. Every child but the last must keep its
-        // non-matches for the next; the last may drop them unless `rest`.
-        if !should.is_empty() {
-            let last = should.len() - 1;
-            let mut matched = 0;
-            for (i, child) in should.iter_mut().enumerate() {
-                let child_rest = if i != last { Rest::Keep } else { rest };
-                matched += child.check_batched(&mut ids[matched..hi], Select::Match, child_rest)?;
-            }
-            hi = matched;
-        }
-
-        // `min_should`: counting sort, survivors (count >= k) to the front.
-        if *min_should_count > 0 {
-            let k = *min_should_count;
-            if k > min_should.len() {
-                hi = 0;
-            } else {
-                counting_sort(
+                let mut n = all_of(must, ids, Select::Match, rest)?;
+                n = all_of(must_not, &mut ids[..n], Select::NonMatch, rest)?;
+                if !should.is_empty() {
+                    // Empty `should` means "no constraint", not an empty disjunction.
+                    n = any_of(should, &mut ids[..n], Select::Match, rest)?;
+                }
+                n = at_least(
                     min_should,
-                    &mut ids[..hi],
-                    k,
+                    &mut ids[..n],
+                    *min_should_count,
                     Select::Match,
-                    min_should_bounds,
+                    rest,
+                    scratch,
                 )?;
-                hi = min_should_bounds[0];
+                Ok(n)
             }
-        }
+            Select::NonMatch => {
+                // ¬must ∪ ¬must_not ∪ ¬should ∪ ¬min_should
 
-        Ok(hi)
-    }
+                let min_should_rest = rest;
+                let should_rest = min_should_rest.keep_if(*min_should_count > 0);
+                let must_not_rest = should_rest.keep_if(!should.is_empty());
+                let must_rest = must_not_rest.keep_if(!must_not.is_empty());
 
-    fn select_non_match<K: CheckItem>(&mut self, ids: &mut [K]) -> OperationResult<usize> {
-        let OptimizedFilter {
-            should,
-            min_should,
-            min_should_count,
-            must,
-            must_not,
-            scratch: min_should_bounds,
-        } = self;
-
-        // Failers to the front (`!F`, an OR of the negated clauses). Every
-        // child partitions (survivors continue to the next clause).
-        let mut f = 0;
-
-        // `!must` = OR of `!cond`: accumulate the ids failing any `must`.
-        for child in must.iter_mut() {
-            f += child.check_batched(&mut ids[f..], Select::NonMatch, Rest::Keep)?;
-        }
-
-        // `!must_not` = OR of `cond`: accumulate the ids matching any `must_not`.
-        for child in must_not.iter_mut() {
-            f += child.check_batched(&mut ids[f..], Select::Match, Rest::Keep)?;
-        }
-
-        // `!should` = AND of `!cond`: narrow to the ids matching none.
-        if !should.is_empty() {
-            let mut u = ids.len();
-            for child in should.iter_mut() {
-                u = f + child.check_batched(&mut ids[f..u], Select::NonMatch, Rest::Keep)?;
-            }
-            f = u;
-        }
-
-        // `!min_should` = fewer than `k` match = at least `len - k + 1` don't.
-        if *min_should_count > 0 {
-            let k = *min_should_count;
-            let len = min_should.len();
-            if k > len {
-                f = ids.len(); // unsatisfiable clause: every alive id fails it
-            } else {
-                counting_sort(
+                let mut n = any_of(must, ids, Select::NonMatch, must_rest)?;
+                n += any_of(must_not, &mut ids[n..], Select::Match, must_not_rest)?;
+                if !should.is_empty() {
+                    n += all_of(should, &mut ids[n..], Select::NonMatch, should_rest)?;
+                }
+                let threshold = (min_should.len() + 1).saturating_sub(*min_should_count);
+                n += at_least(
                     min_should,
-                    &mut ids[f..],
-                    len - k + 1,
+                    &mut ids[n..],
+                    threshold,
                     Select::NonMatch,
-                    min_should_bounds,
+                    min_should_rest,
+                    scratch,
                 )?;
-                f += min_should_bounds[0];
+                Ok(n)
             }
         }
-
-        Ok(f)
     }
 }
 
-fn counting_sort<K: CheckItem>(
-    children: &mut [ConditionCheckerEnum<'_>],
+/// Select ids that satisfy all of the conditions.
+fn all_of<C: ConditionChecker, K: CheckItem>(
+    conditions: &mut [C],
+    ids: &mut [K],
+    select: Select,
+    rest: Rest,
+) -> Result<usize, C::Error> {
+    // Each step narrows the matching (left) zone.
+    //
+    // Input  │                                                                │
+    //        └────────────────────────────────────────────────────────────────┘
+    // Step A │ A                                                    │ ¬A      │
+    //        └──────────────────────────────────────────────────────┴─────────┘
+    // Step B │ A ∩ B                                       │ A ∩ ¬B │
+    //        └─────────────────────────────────────────────┴────────┘
+    // Step C │ A ∩ B ∩ C                      │ A ∩ B ∩ ¬C │
+    //        └────────────────────────────────┴────────────┘
+    // Step D │ A ∩ B ∩ C ∩ D │ A ∩ B ∩ C ∩ ¬D │
+    //        └───────────────┴────────────────┘
+    // Result │ A ∩ B ∩ C ∩ D │
+    //        └───────────────┘
+    let mut n = ids.len();
+    for condition in conditions {
+        n = condition.check_batched(&mut ids[..n], select, rest)?;
+    }
+    Ok(n)
+}
+
+/// Select ids that satisfy any of the conditions.
+fn any_of<C: ConditionChecker, K: CheckItem>(
+    conditions: &mut [C],
+    ids: &mut [K],
+    select: Select,
+    rest: Rest,
+) -> Result<usize, C::Error> {
+    // Each step scans only the ids rejected by the previous step.
+    //
+    // Input  │                                                                │
+    //        └────────────────────────────────────────────────────────────────┘
+    // Step A │ A │ ¬A                                                         │
+    //        └───┴────────────────────────────────────────────────────────────┘
+    // Step B     │ ¬A ∩ B │ ¬A ∩ ¬B                                           │
+    //            └────────┴───────────────────────────────────────────────────┘
+    // Step C              │ ¬A ∩ ¬B ∩ C │ ¬A ∩ ¬B ∩ ¬C                        │
+    //                     └─────────────┴─────────────────────────────────────┘
+    // Step D                            │¬A ∩ ¬B ∩ ¬C ∩ D │ ¬A ∩ ¬B ∩ ¬C ∩ ¬D │
+    //                                   └─────────────────┴───────────────────┘
+    // Output │ A ∪ B ∪ C ∪ D                              │
+    //        └────────────────────────────────────────────┘
+    let mut n = 0;
+    let last = conditions.len().wrapping_sub(1);
+    for (i, condition) in conditions.iter_mut().enumerate() {
+        // Only the last conditions's rejects are final.
+        let condition_rest = rest.keep_if(i != last);
+        n += condition.check_batched(&mut ids[n..], select, condition_rest)?;
+    }
+    Ok(n)
+}
+
+/// Selects ids that satisfy at least `threshold` conditions.
+pub fn at_least<C: ConditionChecker, K: CheckItem>(
+    conditions: &mut [C],
     ids: &mut [K],
     threshold: usize,
     select: Select,
+    rest: Rest,
     scratch: &mut Vec<usize>,
-) -> OperationResult<()> {
+) -> Result<usize, C::Error> {
+    if threshold == 0 {
+        return Ok(ids.len());
+    }
+    if threshold > conditions.len() {
+        return Ok(0);
+    }
+
+    // Counting sort: ids are kept in blocks by descending number of satisfied
+    // children; `ids[..scratch[0]]` satisfy at least `threshold` of them,
+    // `ids[scratch[i - 1]..scratch[i]]` satisfy exactly `threshold - i`.
+    // A satisfied id moves to the front of its block, joining the block above.
     let m = ids.len();
     scratch.clear();
     scratch.resize(threshold, 0);
-    for child in children.iter_mut() {
+    let last = conditions.len() - 1;
+    for (c, condition) in conditions.iter_mut().enumerate() {
+        // Only the last condition's rejects are final (see `any_of`).
+        let child_rest = rest.keep_if(c != last);
         for i in 0..threshold {
             let start = scratch[i];
             let end = if i + 1 < threshold { scratch[i + 1] } else { m };
-            scratch[i] += child.check_batched(&mut ids[start..end], select, Rest::Keep)?;
+            scratch[i] += condition.check_batched(&mut ids[start..end], select, child_rest)?;
         }
     }
-    Ok(())
+    Ok(scratch[0])
 }

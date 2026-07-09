@@ -121,9 +121,11 @@ impl ConditionChecker for ScorerFilters<'_> {
             }
             Select::NonMatch => {
                 // De Morgan: ids failing either condition accumulate at the front.
-                let mut f = deleted.check_batched(ids, Select::NonMatch, Rest::Keep)?;
+                // `deleted` may drop its survivors only if no filter follows.
+                let deleted_rest = rest.keep_if(filter_context.is_some());
+                let mut f = deleted.check_batched(ids, Select::NonMatch, deleted_rest)?;
                 if let Some(filter) = filter_context {
-                    f += filter.check_batched(&mut ids[f..], Select::NonMatch, Rest::Keep)?;
+                    f += filter.check_batched(&mut ids[f..], Select::NonMatch, rest)?;
                 }
                 Ok(f)
             }
