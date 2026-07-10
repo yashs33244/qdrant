@@ -249,10 +249,10 @@ fn read_only_matches_read_write_multivector(
 /// the directory makes the prefetch pool the *only* possible source: the
 /// already-open handles parked in the pool stay readable, while any fallback
 /// open hits `NotFound`.
-fn preopen_and_unlink(dir: &std::path::Path, multivector: bool) -> CachedFs<MmapFs> {
+fn preopen_and_unlink(dir: &std::path::Path, multivector: bool, on_disk: bool) -> CachedFs<MmapFs> {
     let mut cached_fs = CachedFs::new(MmapFs, dir).unwrap();
     cached_fs.cache_file_info().unwrap();
-    ReadOnlyQuantizedVectors::<MmapFile>::preopen(&cached_fs, dir, multivector).unwrap();
+    ReadOnlyQuantizedVectors::<MmapFile>::preopen(&cached_fs, dir, multivector, on_disk).unwrap();
 
     for entry in fs_err::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
@@ -294,7 +294,7 @@ fn preopen_then_open_through_cached_fs(
     )
     .unwrap();
 
-    let cached_fs = preopen_and_unlink(quant_dir.path(), false);
+    let cached_fs = preopen_and_unlink(quant_dir.path(), false, on_disk);
 
     let ro = ReadOnlyQuantizedVectors::<MmapFile>::open(
         &cached_fs,
@@ -365,7 +365,7 @@ fn preopen_then_open_multivector_through_cached_fs(
     )
     .unwrap();
 
-    let cached_fs = preopen_and_unlink(quant_dir.path(), true);
+    let cached_fs = preopen_and_unlink(quant_dir.path(), true, on_disk);
 
     let ro = ReadOnlyQuantizedVectors::<MmapFile>::open(
         &cached_fs,

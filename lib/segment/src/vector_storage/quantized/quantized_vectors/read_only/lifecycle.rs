@@ -20,7 +20,7 @@ use crate::vector_storage::quantized::quantized_multivector_storage::{
 use crate::vector_storage::quantized::quantized_ram_storage::QuantizedRamStorage;
 use crate::vector_storage::quantized::quantized_storage::QuantizedStorage;
 use crate::vector_storage::quantized::quantized_vectors::{
-    QuantizedStorageKind, QuantizedVectors, QuantizedVectorsConfig, QuantizedVectorsStorageType,
+    QuantizedStorageKind, QuantizedVectors, QuantizedVectorsConfig,
 };
 
 impl<S: UniversalRead> ReadOnlyQuantizedVectors<S> {
@@ -32,16 +32,18 @@ impl<S: UniversalRead> ReadOnlyQuantizedVectors<S> {
     /// `open`'s `Ok(None)`. `multivector` stands in for `open`'s
     /// `multivector_config`: only presence changes the file set.
     ///
-    /// Unlike `open` there is no dispatch on the storage kind: which flat
-    /// reader (RAM oneshot vs mmap) later consumes the data file doesn't
-    /// change the file set, only flat vs chunked does — and that is the
-    /// storage *type*. Absent files are skipped rather than reported: the
-    /// subsequent open is the one to produce the error.
+    /// Dispatches on the same storage kind as `open` to decide how each file
+    /// is parked: the RAM kinds read their data and offsets in full on open,
+    /// so their prefetch populates; the mmap kinds read lazily, so their
+    /// handles stay cold; the chunked kinds follow their open's cold
+    /// `Populate::No`.
     pub fn preopen(
         fs: &impl CachedReadFs<File = S>,
         path: &Path,
         multivector: bool,
+        on_disk_vector_storage: bool,
     ) -> OperationResult<()> {
+        // Config
         let config_path = QuantizedVectors::get_config_path(path);
         let config: Option<QuantizedVectorsConfig> =
             read_json_via(fs, &config_path).ok_not_found()?;
@@ -50,33 +52,36 @@ impl<S: UniversalRead> ReadOnlyQuantizedVectors<S> {
         };
         fs.schedule_prefetch(&config_path, None, None)?;
 
-        // Per-method metadata.
-        fs.schedule_prefetch(&QuantizedVectors::get_meta_path(path), None, None)
-            .ok_not_found()?;
+        // Per-method metadata
+        fs.schedule_prefetch(&QuantizedVectors::get_meta_path(path), None, None)?;
 
-        // Quantized data (and multivector offsets): a flat file for the
-        // immutable layout, a chunked directory for the appendable one.
+        // Quantized data and multivector offsets
         let data_path = QuantizedVectors::get_data_path(path, config.storage_type);
         let offsets_path =
             multivector.then(|| QuantizedVectors::get_offsets_path(path, config.storage_type));
-        match config.storage_type {
-            QuantizedVectorsStorageType::Immutable => {
-                fs.schedule_prefetch(
-                    &data_path,
-                    Some(QuantizedStorage::<S>::open_options()),
-                    None,
-                )
-                .ok_not_found()?;
+        match config.storage_kind(on_disk_vector_storage)? {
+            QuantizedStorageKind::ScalarRam
+            | QuantizedStorageKind::PqRam
+            | QuantizedStorageKind::BinaryRam
+            | QuantizedStorageKind::TqRam => {
+                QuantizedRamStorage::preopen(fs, &data_path)?;
                 if let Some(offsets_path) = offsets_path {
-                    fs.schedule_prefetch(&offsets_path, None, None)
-                        .ok_not_found()?;
+                    MultivectorOffsetsStorageRam::preopen(fs, &offsets_path)?;
                 }
             }
-            QuantizedVectorsStorageType::Mutable => {
-                QuantizedChunkedStorageRead::<S>::preopen(fs, &data_path).ok_not_found()?;
+            QuantizedStorageKind::ScalarMmap
+            | QuantizedStorageKind::PqMmap
+            | QuantizedStorageKind::BinaryMmap
+            | QuantizedStorageKind::TqMmap => {
+                QuantizedStorage::<S>::preopen(fs, &data_path)?;
                 if let Some(offsets_path) = offsets_path {
-                    MultivectorOffsetsStorageChunkedRead::<S>::preopen(fs, &offsets_path)
-                        .ok_not_found()?;
+                    MultivectorOffsetsStorageMmap::<S>::preopen(fs, &offsets_path)?;
+                }
+            }
+            QuantizedStorageKind::BinaryChunked | QuantizedStorageKind::TqChunked => {
+                QuantizedChunkedStorageRead::<S>::preopen(fs, &data_path)?;
+                if let Some(offsets_path) = offsets_path {
+                    MultivectorOffsetsStorageChunkedRead::<S>::preopen(fs, &offsets_path)?;
                 }
             }
         }

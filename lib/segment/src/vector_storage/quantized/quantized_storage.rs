@@ -9,7 +9,8 @@ use common::generic_consts::Random;
 use common::mmap::{AdviceSetting, MmapFlusher, advice};
 use common::types::PointOffsetType;
 use common::universal_io::{
-    MmapFile, MmapFs, OpenOptions, Populate, ReadOnly, ReadRange, UniversalRead, UniversalReadFs,
+    CachedReadFs, MmapFile, MmapFs, OpenOptions, Populate, ReadOnly, ReadRange, UniversalRead,
+    UniversalReadFs,
 };
 use fs_err as fs;
 use memmap2::MmapMut;
@@ -70,13 +71,22 @@ pub struct QuantizedStorageBuilder<S> {
 }
 
 impl<S: UniversalRead> QuantizedStorage<S> {
-    pub(in crate::vector_storage::quantized) fn open_options() -> OpenOptions {
+    fn open_options() -> OpenOptions {
         OpenOptions {
             writeable: false,
             need_sequential: false,
             populate: Populate::No,
             advice: AdviceSetting::Global,
         }
+    }
+
+    /// Schedule background prefetch of the data file [`Self::from_file`] reads.
+    ///
+    /// The storage reads lazily through its mmap-style handle, so the parked
+    /// handle stays cold (`Populate::No`), matching the open.
+    pub fn preopen(fs: &impl CachedReadFs<File = S>, path: &Path) -> OperationResult<()> {
+        fs.schedule_prefetch(path, Some(Self::open_options()), None)?;
+        Ok(())
     }
 
     pub fn from_file(

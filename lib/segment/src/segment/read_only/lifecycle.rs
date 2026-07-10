@@ -125,6 +125,7 @@ impl<S: UniversalReadExt + 'static> ReadOnlySegment<S> {
                     fs,
                     &path,
                     vector_config.multivector_config.is_some(),
+                    vector_config.storage_type.is_on_disk(),
                 )?;
             }
         }
