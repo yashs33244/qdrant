@@ -140,10 +140,18 @@ impl<S: UniversalReadExt + 'static> ReadOnlySegment<S> {
             {
                 quantized_configs.insert(vector_name.clone(), quantized_config);
             }
+
+            // Vector index
+            let index_path = get_vector_index_path(segment_path, vector_name);
+            VectorIndexReadEnum::<S>::preopen(fs, vector_config, &index_path)?;
         }
         for vector_name in config.sparse_vector_data.keys() {
             let path = get_vector_storage_path(segment_path, vector_name);
             ReadOnlySparseVectorStorage::<S>::preopen(fs, &path)?;
+
+            // Sparse vector index
+            let index_path = get_vector_index_path(segment_path, vector_name);
+            VectorIndexReadEnum::<S>::preopen_sparse(fs, &index_path)?;
         }
 
         // Payload indexes
