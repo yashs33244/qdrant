@@ -332,6 +332,7 @@ impl From<GridstoreError> for OperationError {
                 | UniversalIoError::InvalidFileIndex { .. }
                 | UniversalIoError::Uninitialized { .. }
                 | UniversalIoError::QueueIsFull
+                | UniversalIoError::AppendOffsetConflict { .. }
                 | UniversalIoError::S3(_)
                 | UniversalIoError::S3Config { .. }
                 | UniversalIoError::TaskPanicked(_)) => {
