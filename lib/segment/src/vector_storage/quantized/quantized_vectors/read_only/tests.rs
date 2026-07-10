@@ -25,7 +25,7 @@ use crate::vector_storage::VectorStorageEnum;
 use crate::vector_storage::dense::dense_vector_storage::open_dense_vector_storage;
 use crate::vector_storage::dense::volatile_dense_vector_storage::new_volatile_dense_vector_storage;
 use crate::vector_storage::quantized::quantized_vectors::{
-    QuantizedVectors, QuantizedVectorsStorageType,
+    QuantizedVectors, QuantizedVectorsConfig, QuantizedVectorsStorageType,
 };
 use crate::vector_storage::vector_storage_base::{VectorStorage, VectorStorageRead};
 
@@ -249,10 +249,20 @@ fn read_only_matches_read_write_multivector(
 /// the directory makes the prefetch pool the *only* possible source: the
 /// already-open handles parked in the pool stay readable, while any fallback
 /// open hits `NotFound`.
-fn preopen_and_unlink(dir: &std::path::Path, multivector: bool, on_disk: bool) -> CachedFs<MmapFs> {
+///
+/// Returns the config `preopen` read: the config file is fetched exactly once,
+/// so the open must go through `open_with_config`, like the segment open path.
+fn preopen_and_unlink(
+    dir: &std::path::Path,
+    multivector: bool,
+    on_disk: bool,
+) -> (CachedFs<MmapFs>, QuantizedVectorsConfig) {
     let mut cached_fs = CachedFs::new(MmapFs, dir).unwrap();
     cached_fs.cache_file_info().unwrap();
-    ReadOnlyQuantizedVectors::<MmapFile>::preopen(&cached_fs, dir, multivector, on_disk).unwrap();
+    let quantized_config =
+        ReadOnlyQuantizedVectors::<MmapFile>::preopen(&cached_fs, dir, multivector, on_disk)
+            .unwrap()
+            .expect("quantization config exists");
 
     for entry in fs_err::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
@@ -263,7 +273,7 @@ fn preopen_and_unlink(dir: &std::path::Path, multivector: bool, on_disk: bool) -
         }
     }
 
-    cached_fs
+    (cached_fs, quantized_config)
 }
 
 /// `preopen` must schedule exactly the files `open` goes on to consume; see
@@ -294,18 +304,18 @@ fn preopen_then_open_through_cached_fs(
     )
     .unwrap();
 
-    let cached_fs = preopen_and_unlink(quant_dir.path(), false, on_disk);
+    let (cached_fs, quantized_config) = preopen_and_unlink(quant_dir.path(), false, on_disk);
 
-    let ro = ReadOnlyQuantizedVectors::<MmapFile>::open(
+    let ro = ReadOnlyQuantizedVectors::<MmapFile>::open_with_config(
         &cached_fs,
         quant_dir.path(),
+        quantized_config,
         storage.distance(),
         storage.datatype(),
         None,
         on_disk,
     )
-    .unwrap()
-    .expect("quantization config exists");
+    .unwrap();
 
     let sample: Vec<PointOffsetType> = (0..NUM_POINTS as PointOffsetType).step_by(7).collect();
     let query = QueryVector::Nearest(storage.get_vector::<Random>(0).to_owned());
@@ -365,18 +375,18 @@ fn preopen_then_open_multivector_through_cached_fs(
     )
     .unwrap();
 
-    let cached_fs = preopen_and_unlink(quant_dir.path(), true, on_disk);
+    let (cached_fs, quantized_config) = preopen_and_unlink(quant_dir.path(), true, on_disk);
 
-    let ro = ReadOnlyQuantizedVectors::<MmapFile>::open(
+    let ro = ReadOnlyQuantizedVectors::<MmapFile>::open_with_config(
         &cached_fs,
         quant_dir.path(),
+        quantized_config,
         storage.distance(),
         storage.datatype(),
         Some(&multivector_config),
         on_disk,
     )
-    .unwrap()
-    .expect("quantization config exists");
+    .unwrap();
 
     let sample: Vec<PointOffsetType> = (0..NUM_POINTS as PointOffsetType).step_by(11).collect();
     let query = QueryVector::Nearest(storage.get_vector::<Random>(0).to_owned());

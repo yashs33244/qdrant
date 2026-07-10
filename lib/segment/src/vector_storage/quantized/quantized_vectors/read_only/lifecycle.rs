@@ -24,33 +24,41 @@ use crate::vector_storage::quantized::quantized_vectors::{
 };
 
 impl<S: UniversalRead> ReadOnlyQuantizedVectors<S> {
-    /// Schedule background prefetch of every file [`Self::open`] will read.
+    /// Read the persisted quantization config at `path`, or `Ok(None)` when
+    /// there is none (quantization isn't built).
+    pub fn load_config(
+        fs: &impl UniversalReadFs<File = S>,
+        path: &Path,
+    ) -> OperationResult<Option<QuantizedVectorsConfig>> {
+        let config_path = QuantizedVectors::get_config_path(path);
+        Ok(read_json_via(fs, &config_path).ok_not_found()?)
+    }
+
+    /// Schedule background prefetch of every file
+    /// [`open_with_config`](Self::open_with_config) will read.
     ///
-    /// Reads the quantization config to learn the layout — and then schedules
-    /// it, so `open`'s own read is served from the prefetch pool. A missing
-    /// config means quantization isn't built: nothing to schedule, like
-    /// `open`'s `Ok(None)`. `multivector` stands in for `open`'s
+    /// Reads the quantization config to learn the layout — reading it here is
+    /// the only fetch, so pass the returned config on to `open_with_config`
+    /// rather than reading it a second time. A missing config means
+    /// quantization isn't built: nothing is scheduled and `None` is returned,
+    /// like `open`'s `Ok(None)`. `multivector` stands in for `open`'s
     /// `multivector_config`: only presence changes the file set.
     ///
-    /// Dispatches on the same storage kind as `open` to decide how each file
-    /// is parked: the RAM kinds read their data and offsets in full on open,
-    /// so their prefetch populates; the mmap kinds read lazily, so their
-    /// handles stay cold; the chunked kinds follow their open's cold
+    /// Dispatches on the same storage kind as the open to decide how each
+    /// file is parked: the RAM kinds read their data and offsets in full on
+    /// open, so their prefetch populates; the mmap kinds read lazily, so
+    /// their handles stay cold; the chunked kinds follow their open's cold
     /// `Populate::No`.
     pub fn preopen(
         fs: &impl CachedReadFs<File = S>,
         path: &Path,
         multivector: bool,
         on_disk_vector_storage: bool,
-    ) -> OperationResult<()> {
+    ) -> OperationResult<Option<QuantizedVectorsConfig>> {
         // Config
-        let config_path = QuantizedVectors::get_config_path(path);
-        let config: Option<QuantizedVectorsConfig> =
-            read_json_via(fs, &config_path).ok_not_found()?;
-        let Some(config) = config else {
-            return Ok(());
+        let Some(config) = Self::load_config(fs, path)? else {
+            return Ok(None);
         };
-        fs.schedule_prefetch(&config_path, None, None)?;
 
         // Per-method metadata
         fs.schedule_prefetch(&QuantizedVectors::get_meta_path(path), None, None)?;
@@ -85,20 +93,14 @@ impl<S: UniversalRead> ReadOnlyQuantizedVectors<S> {
                 }
             }
         }
-        Ok(())
+        Ok(Some(config))
     }
 
     /// Open existing quantized vectors read-only through the [`UniversalRead`] backend `S`.
     ///
-    /// Returns `Ok(None)` when no quantization config is present at `path`. Every read —
-    /// config, per-method metadata, quantized data and multivector offsets — goes through `S`;
-    /// nothing is read with direct filesystem access and nothing is written. Both on-disk
-    /// layouts are supported read-only: the immutable flat format and the appendable chunked
-    /// format (the latter only produced by Binary/TurboQuant). Unlike
-    /// [`QuantizedVectors::load`], this never creates or quantizes anything.
-    ///
-    /// `distance`, `datatype`, `multivector_config` and `on_disk_vector_storage` describe
-    /// the original (source) vector storage this quantization was built for.
+    /// Returns `Ok(None)` when no quantization config is present at `path`. On the preopened
+    /// path use [`open_with_config`](Self::open_with_config) with the config
+    /// [`preopen`](Self::preopen) already read instead.
     pub fn open(
         fs: &impl UniversalReadFs<File = S>,
         path: &Path,
@@ -107,13 +109,41 @@ impl<S: UniversalRead> ReadOnlyQuantizedVectors<S> {
         multivector_config: Option<&MultiVectorConfig>,
         on_disk_vector_storage: bool,
     ) -> OperationResult<Option<Self>> {
-        let config_path = QuantizedVectors::get_config_path(path);
-        let config: Option<QuantizedVectorsConfig> =
-            read_json_via(fs, &config_path).ok_not_found()?;
-        let Some(config) = config else {
+        let Some(config) = Self::load_config(fs, path)? else {
             return Ok(None);
         };
+        Self::open_with_config(
+            fs,
+            path,
+            config,
+            distance,
+            datatype,
+            multivector_config,
+            on_disk_vector_storage,
+        )
+        .map(Some)
+    }
 
+    /// Open existing quantized vectors read-only from their already-read `config`
+    /// (see [`load_config`](Self::load_config) / [`preopen`](Self::preopen)).
+    ///
+    /// Every read — per-method metadata, quantized data and multivector offsets — goes
+    /// through `S`; nothing is read with direct filesystem access and nothing is written.
+    /// Both on-disk layouts are supported read-only: the immutable flat format and the
+    /// appendable chunked format (the latter only produced by Binary/TurboQuant). Unlike
+    /// [`QuantizedVectors::load`], this never creates or quantizes anything.
+    ///
+    /// `distance`, `datatype`, `multivector_config` and `on_disk_vector_storage` describe
+    /// the original (source) vector storage this quantization was built for.
+    pub fn open_with_config(
+        fs: &impl UniversalReadFs<File = S>,
+        path: &Path,
+        config: QuantizedVectorsConfig,
+        distance: Distance,
+        datatype: VectorStorageDatatype,
+        multivector_config: Option<&MultiVectorConfig>,
+        on_disk_vector_storage: bool,
+    ) -> OperationResult<Self> {
         let storage_impl = match multivector_config {
             Some(multivector_config) => Self::open_multi(
                 fs,
@@ -125,13 +155,13 @@ impl<S: UniversalRead> ReadOnlyQuantizedVectors<S> {
             None => Self::open_single(fs, path, &config, on_disk_vector_storage)?,
         };
 
-        Ok(Some(Self::new(
+        Ok(Self::new(
             storage_impl,
             config,
             path.to_path_buf(),
             distance,
             datatype,
-        )))
+        ))
     }
 
     fn open_single(

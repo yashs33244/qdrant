@@ -15,6 +15,7 @@ use crate::segment_constructor::{get_payload_index_path, get_vector_storage_path
 use crate::types::{
     SegmentConfig, SegmentState, SegmentType, VectorDataConfig, VectorName, VectorNameBuf,
 };
+use crate::vector_storage::quantized::quantized_vectors::ReadOnlyQuantizedVectors;
 use crate::vector_storage::read_only::VectorStorageReadEnum;
 use crate::vector_storage::sparse::read_only::ReadOnlySparseVectorStorage;
 
@@ -169,12 +170,20 @@ impl<S: UniversalReadExt + 'static> ReadOnlySegment<S> {
             ))
         })?;
         let storage = Arc::new(AtomicRefCell::new(storage));
+
+        // No preopen ran on this path: read the quantization config here.
+        let quantized_config = if new_config.quantization_config(name).is_some() {
+            ReadOnlyQuantizedVectors::load_config(fs, &path)?
+        } else {
+            None
+        };
+
         ReadOnlyVectorData::open_dense(
             fs,
             &self.segment_path,
             name,
             config,
-            new_config,
+            quantized_config,
             self.id_tracker.clone(),
             self.payload_index.clone(),
             storage,
